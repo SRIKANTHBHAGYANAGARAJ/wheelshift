@@ -1,601 +1,585 @@
-# File Storage System - Implementation Guide
+# Role-Based Access Control (RBAC)
 
 ## Overview
 
-This is a comprehensive file storage system for WheelShift Pro that acts as an internal S3-like storage solution. It supports multiple file types (images, PDFs, Excel, CSV, documents) with automatic segregation, metadata tracking, and easy retrieval using file IDs and public URLs.
+Comprehensive RBAC system with hierarchical roles, fine-grained permissions, data scopes, and resource-level ACLs.
 
-## Features
+## Core Components
 
-- ✅ **Multi-type File Support**: Images, PDFs, Excel, CSV, Documents, and Others
-- ✅ **Automatic File Segregation**: Files organized by type in separate directories
-- ✅ **UUID-based File IDs**: Unique identifiers for each file
-- ✅ **Public URL Generation**: Direct access URLs for file retrieval
-- ✅ **File Metadata Tracking**: Complete metadata including size, type, upload source
-- ✅ **Batch Upload Support**: Upload multiple files in one request
-- ✅ **Soft & Hard Delete**: Flexible deletion options
-- ✅ **File Archiving**: Archive files without deletion
-- ✅ **Storage Statistics**: Track storage usage by file type
-- ✅ **File Validation**: Size and type validation before upload
-- ✅ **REST API**: Complete RESTful API with Swagger documentation
+1. **Roles** - User roles in the system (SUPER_ADMIN, ADMIN, SALES, etc.)
+2. **Permissions** - Fine-grained access controls (`resource:action` format)
+3. **Custom Employee Permissions** - ⭐ **NEW!** Direct permission assignment to individual employees
+4. **Data Scopes** - Filter data by location, department, or assignment
+5. **Resource ACLs** - Individual resource-level access control
 
-## Architecture
-
-The system follows the WheelShift Pro layered architecture:
+## Authorization Precedence
 
 ```
-┌─────────────────────────────────────┐
-│    FileStorageController            │  ← REST endpoints
-├─────────────────────────────────────┤
-│    FileStorageService/Impl          │  ← Business logic
-├─────────────────────────────────────┤
-│    FileMetadataRepository           │  ← Data access
-├─────────────────────────────────────┤
-│    FileMetadata Entity              │  ← JPA entity
-├─────────────────────────────────────┤
-│    MySQL Database + File System     │  ← Persistent storage
-└─────────────────────────────────────┘
-
-Supporting:
-├── FileType & FileStatus Enums
-├── DTOs (Request/Response)
-├── FileMetadataMapper
-└── Custom Exceptions
+Resource ACL > Custom Employee Permissions > Data Scope > Role Permission
 ```
 
-## File Structure
+**Explanation:**
+- **Resource ACL** (highest): Override all other permissions for specific resources
+- **Custom Employee Permissions**: Direct permissions assigned to individual employees by super admins
+- **Data Scope**: Filter what data employees can see
+- **Role Permission** (base): Default permissions from employee's assigned roles
+
+## Built-in Roles & Permissions
+
+## Built-in Roles & Permissions
+
+| Role | ID | Permissions | Use Case |
+|------|-------|------------|----------|
+| **SUPER_ADMIN** | 1 | `*:*` (all permissions) | Full system access |
+| **ADMIN** | 2 | `employees:*`, `roles:*`, `permissions:*`, `locations:*`, `reports:read` | Administrative access |
+| **SALES** | 3 | `inquiries:*`, `reservations:*`, `sales:*`, `clients:read`, `cars:read` | Sales operations |
+| **INSPECTOR** | 4 | `inspections:*`, `cars:read`, `movements:write` | Vehicle inspections |
+| **FINANCE** | 5 | `transactions:*`, `sales:read`, `reports:*` | Financial operations |
+| *Quick Start
+
+### 1. Login & Get Token
+
+```bash
+POST /api/v1/auth/login
+Content-Type: application/json
+
+{
+  "email": "admin@wheelshift.com",
+  "password": "admin123"
+}
+
+Response:
+{
+  "token": "eyJhbGc...",
+  "employee": {...},
+  "roles": ["ADMIN"],
+  "permissions": ["cars:read", "cars:write", ...]
+}
+```
+
+### 2. Check Permissions in Code
+
+```java
+@Autowired
+private AuthorizationService authService;
+
+// Basic permission check
+boolean canEdit = authService.hasPermission(employeeId, "cars:write");
+
+// Resource-level access check
+boolean canAccessCar = authService.canAccessResource(
+    employeeId, 
+    ResourceType.CAR, 
+    "CAR-123", 
+    AccessLevel.WRITE
+);
+
+// Apply data scopes to queries
+Specification<Car> spec = authService.applyDataScopes(
+    employeeId, 
+    ResourceType.CAR
+);
+List<Car> cars = carRepository.findAll(spec);
+```
+
+### 3. Protect Endpoints
+**Example:**
+```bash
+POST /api/v1/data-scopes
+{
+  "employeeId": 5,
+  "scopeType": "LOCATION",
+  "scopeValue": "LOC-001",
+  "effect": "INCLUDE"
+}
+```
+Employee can only see resources in location LOC-001.
+
+**Usage in Code:**
+```java
+// Apply data scopes to query
+Specification<Car> spec = authService.applyDataScopes(
+    employeeId, 
+    ResourceType.CAR
+);
+List<Car> filteredCars = carRepository.findAll(spec);
+```
+}
+```
+
+## *STORE_MANAGER** | 6 | `cars:*`, `movements:*`, `locations:read`, `inspections:read`, `tasks:*` | Location management |
+
+### Default Credentials
+
+**Example:**
+```bash
+POST /api/v1/resource-acl
+{
+  "resourceType": "CAR",
+  "resourceId": "CAR-123",
+  "subjectType": "EMPLOYEE",
+  "subjectId": 5,
+  "accessLevel": "ADMIN"
+}
+```
+Employee 5 has admin access to CAR-123, regardless of role permissions.
+
+**Check in Code:**
+```java
+boolean canEdit = authService.canAccessResource(
+    employeeId, 
+    ResourceType.CAR, 
+    carId, 
+    AccessLevel.WRITE
+);
+```
+inquiries:*     - All inquiry operations
+```
+
+### Available Resources
+
+- `cars`, `car-models`, `clients`, `employees`, `inquiries`, `reservations`
+- `sales`, `transactions`, `inspections`, `locations`, `tasks`, `events`
+- `roles`, `permissions`, `acl`, `notifications`
+
+### Available Actions
+
+- `read` - View operations
+- `write` - Create/update operations
+- `delete` - Delete operations
+- `*` - All actions (wildcard)
+
+## Data Scopes
+
+Filter data access based on organizational boundaries:
+
+### Scope Types
+
+1. **LOCATION** - Access limited to specific storage locations
+2. **DEPARTMENT** - Access limited to department resources
+3. **ASSIGNMENT** - Access only to assigned resources
+
+### Scope Effects
+
+- **INCLUDE** - Grant access to specified scope
+- **EXCLUDE** - Deny access to specified scope
+
+### Example
+
+```json
+{
+  "employeeId": 1,
+  "scopeType": "LOCATION",
+  "scopeValue": "LOC-001",
+  "effect": "INCLUDE"
+}
+```
+
+Employee can only see cars, inquiries, etc. in location LOC-001.
+
+## ⭐ Custom Employee Permissions (NEW!)
+
+Assign permissions **directly to individual employees**, independent of their roles.
+
+### Use Case
+
+**Example:** A SALES employee needs temporary access to manage cars (normally only STORE_MANAGER has this).
+
+**Solution:** Super admin assigns `cars:write` permission directly to the employee:
+
+```bash
+POST /api/v1/rbac/employee-permissions/employees/5
+{
+  "permissionId": 15,  // cars:write
+  "reason": "Temporary access for Q4 sales campaign"
+}
+```
+
+### How It Works
 
 ```
-uploads/                          # Base storage directory
-├── images/                       # IMAGE files (jpg, png, gif, etc.)
-│   ├── 20260131_143022_uuid1.jpg
-│   └── 20260131_143045_uuid2.png
-├── pdfs/                         # PDF files
-│   └── 20260131_143100_uuid3.pdf
-├── excel/                        # Excel files (xls, xlsx)
-│   └── 20260131_143115_uuid4.xlsx
-├── csv/                          # CSV files
-│   └── 20260131_143130_uuid5.csv
-├── documents/                    # Document files (doc, docx, txt)
-│   └── 20260131_143145_uuid6.docx
-└── other/                        # Other file types
-    └── 20260131_143200_uuid7.zip
+Employee's Final Permissions = Role Permissions + Custom Permissions
+```
+
+The system automatically merges both when checking permissions:
+- **Role gives:** `["cars:read", "reservations:write"]`
+- **Custom adds:** `["cars:write", "transactions:read"]`
+- **Total access:** All 4 permissions
+
+### Benefits
+
+✅ **Flexible** - Grant any permission to any employee  
+✅ **Temporary** - Easy to add/remove when needed  
+✅ **Auditable** - Tracks who granted it and why  
+✅ **Independent** - Doesn't affect role definitions  
+
+**📚 See [Custom Permissions Guide](CUSTOM_PERMISSIONS_GUIDE.md) for complete documentation**
+
+## Resource ACLs
+
+Override role permissions for specific resources:
+
+### Access Levels
+
+- **READ** - View only
+- **WRITE** - View and edit
+- **ADMIN** - Full control
+
+### Subject Types
+Endpoints
+
+### Authentication
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/v1/auth/login` | Login and get JWT token |
+| POST | `/api/v1/auth/logout` | Logout |
+
+### Roles
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/v1/roles` | Get all roles |
+| GET | `/api/v1/roles/{id}` | Get role by ID |
+| POST | `/api/v1/roles` | Create role |
+| PUT | `/api/v1/roles/{id}` | Update role |
+| DELETE | `/api/v1/roles/{id}` | Delete role |
+
+### Employee Roles
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/v1/employee-roles/employee/{employeeId}` | Get employee roles |
+| POST | `/api/v1/employee-roles` | Assign role to employee |
+| DELETE | `/api/v1/employee-roles` | Remove role from employee |
+
+### Permissions
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/v1/permissions` | Get all permissions |
+| GET | `/api/v1/permissions/{id}` | Get permission by ID |
+| POST | `/api/v1/permissions` | Create permission |
+
+### Data Scopes
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/v1/data-scopes/employee/{employeeId}` | Get employee scopes |
+| POST | `/api/v1/data-scopes` | Create data scope |
+| DELETE | `/api/v1/data-scopes/{id}` | Delete data scope |
+
+### Resource ACLs
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/v1/resource-acl/resource/{type}/{id}` | Get resource ACLs |
+| POST | `/api/v1/resource-acl` | Grant resource access |
+| DELETE | `/api/v1/resource-acl/{id}` | Revoke resource access |
+
+### ⭐ Custom Employee Permissions (NEW!)
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/v1/rbac/employee-permissions/employees/{employeeId}` | Assign custom permission to employee |
+| DELETE | `/api/v1/rbac/employee-permissions/employees/{employeeId}/permissions/{permissionId}` | Remove custom permission |
+| GET | `/api/v1/rbac/employee-permissions/employees/{employeeId}` | Get employee's custom permissions |
+| GET | `/api/v1/rbac/employee-permissions/employees/{employeeId}/permission-names` | Get custom permission names |
+| DELETE | `/api/v1/rbac/employee-permissions/employees/{employeeId}` | Remove all custom permissions |
+
+**📚 See [Custom Permissions Guide](CUSTOM_PERMISSIONS_GUIDE.md) for detailed documentation**
+```java
+@RestController
+@RequestMapping("/api/v1/cars")
+public class CarController {
+    
+    @GetMapping("/{id}")
+    @PreAuthorize("@authService.hasPermission(authentication.name, 'cars:read')")
+    public ResponseEntity<CarResponse> getCar(@PathVariable Long id) {
+        // Method implementation
+    }
+    
+    @PostMapping
+    @PreAuthorize("@authService.hasPermission(authentication.name, 'cars:write')")
+    public ResponseEntity<CarResponse> createCar(@RequestBody CarRequest request) {
+        // Method implementation
+    }
+}
 ```
 
 ## Database Schema
 
-### file_metadata Table
-
-| Column | Type | Description |
-|--------|------|-------------|
-| id | BIGINT | Primary key (auto-increment) |
-| file_id | VARCHAR(64) | Unique UUID identifier |
-| original_filename | VARCHAR(255) | Original uploaded filename |
-| stored_filename | VARCHAR(255) | Filename in storage |
-| file_type | VARCHAR(20) | FILE_TYPE enum value |
-| mime_type | VARCHAR(128) | MIME type of the file |
-| file_size | BIGINT | Size in bytes |
-| file_extension | VARCHAR(10) | File extension |
-| storage_path | VARCHAR(512) | Relative storage path |
-| public_url | VARCHAR(512) | Public access URL |
-| upload_source | VARCHAR(64) | Source identifier (e.g., car_images) |
-| uploaded_by | VARCHAR(128) | User who uploaded |
-| status | VARCHAR(20) | FILE_STATUS enum value |
-| metadata_json | TEXT | Additional metadata (JSON) |
-| created_at | DATETIME | Creation timestamp |
-| updated_at | DATETIME | Last update timestamp |
-
-## Installation Steps
-
-### 1. Add Migration File
-
-Place `V11__Add_File_Storage_System.sql` in:
-```
-src/main/resources/db/migration/
-```
-
-### 2. Add Java Files
-
-Add the following files to your project:
-
-**Enums** (`src/main/java/com/wheelshiftpro/enums/`):
-- `FileType.java`
-- `FileStatus.java`
-
-**Entity** (`src/main/java/com/wheelshiftpro/entity/`):
-- `FileMetadata.java`
-
-**DTOs** (`src/main/java/com/wheelshiftpro/dto/`):
-- `request/FileUploadRequest.java`
-- `response/FileMetadataResponse.java`
-- `response/FileBatchUploadResponse.java`
-
-**Repository** (`src/main/java/com/wheelshiftpro/repository/`):
-- `FileMetadataRepository.java`
-
-**Mapper** (`src/main/java/com/wheelshiftpro/mapper/`):
-- `FileMetadataMapper.java`
-
-**Service** (`src/main/java/com/wheelshiftpro/service/`):
-- `FileStorageService.java`
-- `impl/FileStorageServiceImpl.java`
-
-**Controller** (`src/main/java/com/wheelshiftpro/controller/`):
-- `FileStorageController.java`
-
-**Exception** (`src/main/java/com/wheelshiftpro/exception/`):
-- `FileStorageException.java`
-
-### 3. Configuration
-
-Add to `application.properties`:
-
-```properties
-# File Storage Configuration
-file.storage.base-path=uploads
-file.storage.base-url=/api/v1/files
-
-# Spring multipart configuration
-spring.servlet.multipart.enabled=true
-spring.servlet.multipart.max-file-size=20MB
-spring.servlet.multipart.max-request-size=100MB
-spring.servlet.multipart.file-size-threshold=2KB
-```
-
-### 4. Create Uploads Directory
-
-Create the base directory (will be auto-created on first upload):
-```bash
-mkdir uploads
-```
-
-## API Endpoints
-
-### Upload Files
-
-#### Single File Upload
-```http
-POST /api/v1/files/upload
-Content-Type: multipart/form-data
-
-Parameters:
-- file: MultipartFile (required)
-- uploadSource: String (optional) - e.g., "car_images"
-- uploadedBy: String (optional) - e.g., "john.doe"
-- additionalMetadata: JSON String (optional)
-
-Response:
-{
-  "success": true,
-  "message": "File uploaded successfully",
-  "data": {
-    "fileId": "550e8400-e29b-41d4-a716-446655440000",
-    "originalFilename": "car-photo.jpg",
-    "fileType": "IMAGE",
-    "mimeType": "image/jpeg",
-    "fileSize": 2048576,
-    "publicUrl": "http://localhost:8080/api/v1/files/550e8400-e29b-41d4-a716-446655440000",
-    "status": "ACTIVE",
-    "createdAt": "2026-01-31T14:30:22"
-  }
-}
-```
-
-#### Batch File Upload
-```http
-POST /api/v1/files/upload/batch
-Content-Type: multipart/form-data
-
-Parameters:
-- files: MultipartFile[] (required)
-- uploadSource: String (optional)
-- uploadedBy: String (optional)
-
-Response:
-{
-  "success": true,
-  "message": "Batch upload completed",
-  "data": {
-    "totalFiles": 5,
-    "successCount": 4,
-    "failureCount": 1,
-    "successfulUploads": [...],
-    "failures": [...]
-  }
-}
-```
-
-### Download/View Files
-
-#### Download File
-```http
-GET /api/v1/files/{fileId}?download=true
-
-Example:
-GET /api/v1/files/550e8400-e29b-41d4-a716-446655440000?download=true
-
-Response: Binary file data with Content-Disposition: attachment
-```
-
-#### View File (Inline)
-```http
-GET /api/v1/files/{fileId}
-
-Example:
-GET /api/v1/files/550e8400-e29b-41d4-a716-446655440000
-
-Response: Binary file data with Content-Disposition: inline
-```
-
-### Retrieve Metadata
-
-#### Get File Metadata
-```http
-GET /api/v1/files/{fileId}/metadata
-
-Response:
-{
-  "success": true,
-  "data": {
-    "fileId": "550e8400-e29b-41d4-a716-446655440000",
-    "originalFilename": "car-photo.jpg",
-    "fileType": "IMAGE",
-    ...
-  }
-}
-```
-
-#### Get All Files (Paginated)
-```http
-GET /api/v1/files?page=0&size=10&sort=createdAt,desc
-
-Response:
-{
-  "success": true,
-  "data": {
-    "content": [...],
-    "totalElements": 50,
-    "totalPages": 5,
-    "number": 0,
-    "size": 10
-  }
-}
-```
-
-#### Get Files by Type
-```http
-GET /api/v1/files/type/IMAGE?page=0&size=10
-
-Valid types: IMAGE, PDF, EXCEL, CSV, DOCUMENT, OTHER
-```
-
-#### Get Files by Upload Source
-```http
-GET /api/v1/files/source/car_images?page=0&size=10
-```
-
-#### Get Files by User
-```http
-GET /api/v1/files/user/john.doe?page=0&size=10
-```
-
-#### Get Multiple Files Metadata
-```http
-POST /api/v1/files/batch-metadata
-Content-Type: application/json
-
-Body:
-[
-  "550e8400-e29b-41d4-a716-446655440000",
-  "660e8400-e29b-41d4-a716-446655440001"
-]
-```
-
-### File Management
-
-#### Soft Delete
-```http
-DELETE /api/v1/files/{fileId}/soft
-
-Marks file as DELETED (keeps file in storage)
-```
-
-#### Hard Delete
-```http
-DELETE /api/v1/files/{fileId}/hard
-
-Permanently removes file from storage and database
-```
-
-#### Archive File
-```http
-PUT /api/v1/files/{fileId}/archive
-
-Marks file as ARCHIVED
-```
-
-#### Restore File
-```http
-PUT /api/v1/files/{fileId}/restore
-
-Restores DELETED or ARCHIVED file to ACTIVE
-```
-
-### Statistics & Cleanup
-
-#### Get Storage Statistics
-```http
-GET /api/v1/files/statistics
-
-Response:
-{
-  "success": true,
-  "data": {
-    "totalFiles": 150,
-    "totalStorageBytes": 524288000,
-    "totalStorageMB": 500.0,
-    "totalStorageGB": 0.49,
-    "byFileType": {
-      "IMAGE": {
-        "count": 80,
-        "storageBytes": 314572800,
-        "storageMB": 300.0
-      },
-      "PDF": {...},
-      ...
-    },
-    "byStatus": {
-      "ACTIVE": 140,
-      "DELETED": 8,
-      "ARCHIVED": 2
-    }
-  }
-}
-```
-
-#### Cleanup Old Deleted Files
-```http
-POST /api/v1/files/cleanup?daysOld=30
-
-Removes files marked as DELETED for more than 30 days
-```
-
-## Usage Examples
-
-### In Your Car Entity
-
-Add file IDs to your Car entity:
-
-```java
-@Entity
-public class Car {
-    // ... other fields
-    
-    @Column(name = "primary_image_id")
-    private String primaryImageId; // Store the file ID
-    
-    @Column(name = "gallery_image_ids", columnDefinition = "TEXT")
-    private String galleryImageIds; // Comma-separated file IDs
-    
-    @Column(name = "document_ids", columnDefinition = "TEXT")
-    private String documentIds; // Comma-separated file IDs for PDFs, etc.
-    
-    // Helper methods
-    public String getPrimaryImageUrl() {
-        return primaryImageId != null 
-            ? "http://localhost:8080/api/v1/files/" + primaryImageId 
-            : null;
-    }
-    
-    public List<String> getGalleryImageUrls() {
-        if (galleryImageIds == null || galleryImageIds.isEmpty()) {
-            return Collections.emptyList();
-        }
-        return Arrays.stream(galleryImageIds.split(","))
-                .map(id -> "http://localhost:8080/api/v1/files/" + id)
-                .collect(Collectors.toList());
-    }
-}
-```
-
-### In Your Car Service
-
-```java
-@Service
-public class CarServiceImpl implements CarService {
-    
-    private final FileStorageService fileStorageService;
-    
-    public CarResponse createCar(CarRequest request, MultipartFile primaryImage, 
-                                 MultipartFile[] galleryImages) {
-        // Upload primary image
-        FileMetadataResponse primaryImageResponse = fileStorageService.uploadFile(
-            primaryImage,
-            FileUploadRequest.builder()
-                .uploadSource("car_primary_images")
-                .uploadedBy(getCurrentUser())
-                .build()
-        );
-        
-        // Upload gallery images
-        FileBatchUploadResponse galleryResponse = fileStorageService.uploadFiles(
-            galleryImages,
-            FileUploadRequest.builder()
-                .uploadSource("car_gallery_images")
-                .uploadedBy(getCurrentUser())
-                .build()
-        );
-        
-        // Create car with file IDs
-        Car car = new Car();
-        car.setPrimaryImageId(primaryImageResponse.getFileId());
-        car.setGalleryImageIds(
-            galleryResponse.getSuccessfulUploads().stream()
-                .map(FileMetadataResponse.Simplified::getFileId)
-                .collect(Collectors.joining(","))
-        );
-        
-        // Save car...
-        return mapper.toResponse(carRepository.save(car));
-    }
-}
-```
-
-### In Your Frontend (React/JavaScript)
-
-```javascript
-// Single file upload
-const uploadFile = async (file) => {
-  const formData = new FormData();
-  formData.append('file', file);
-  formData.append('uploadSource', 'car_images');
-  formData.append('uploadedBy', 'john.doe');
-  
-  const response = await fetch('http://localhost:8080/api/v1/files/upload', {
-    method: 'POST',
-    body: formData
-  });
-  
-  const result = await response.json();
-  console.log('File ID:', result.data.fileId);
-  console.log('Public URL:', result.data.publicUrl);
-  
-  return result.data;
-};
-
-// Display image
-const ImageComponent = ({ fileId }) => {
-  const imageUrl = `http://localhost:8080/api/v1/files/${fileId}`;
-  return <img src={imageUrl} alt="Car" />;
-};
-
-// Batch upload
-const uploadMultipleFiles = async (files) => {
-  const formData = new FormData();
-  files.forEach(file => formData.append('files', file));
-  formData.append('uploadSource', 'car_gallery');
-  
-  const response = await fetch('http://localhost:8080/api/v1/files/upload/batch', {
-    method: 'POST',
-    body: formData
-  });
-  
-  return await response.json();
-};
-```
-
-## File Type Configuration
-
-Each file type has specific configuration:
-
-| Type | Extensions | Max Size | Storage Path |
-|------|-----------|----------|--------------|
-| IMAGE | jpg, jpeg, png, gif, bmp, webp, svg | 10 MB | images/ |
-| PDF | pdf | 20 MB | pdfs/ |
-| EXCEL | xls, xlsx, xlsm, xlsb | 15 MB | excel/ |
-| CSV | csv | 10 MB | csv/ |
-| DOCUMENT | doc, docx, txt, rtf, odt | 15 MB | documents/ |
-| OTHER | * | 10 MB | other/ |
-
-To modify these, edit the `FileType` enum.
-
-## Error Handling
-
-The system throws appropriate exceptions:
-
-- `FileStorageException`: File storage operation failures
-- `ResourceNotFoundException`: File not found
-- `IllegalArgumentException`: Validation failures
-
-Example error response:
-```json
-{
-  "success": false,
-  "message": "File size exceeds maximum allowed size of 10 MB for IMAGE files",
-  "timestamp": "2026-01-31T14:30:22"
-}
-```
+### Tables
+
+- `roles` - Role definitions
+- `permissions` - Permission definitions
+- `role_permissions` - Role-permission mappings
+- `employee_roles` - Employee-role assignments
+- `employee_data_scopes` - Employee data scope filters
+- `resource_acl` - Resource-level access control
+
+### Migrations
+
+- `V4__Add_RBAC_Tables.sql` - Creates RBAC tables
+- `V5__Seed_RBAC_Data.sql` - Seeds default roles and permissions
 
 ## Best Practices
 
-1. **Always store file IDs, not URLs**: URLs can change, file IDs are permanent
-2. **Use upload sources**: Tag files with their source (e.g., "car_images", "invoices")
-3. **Implement cleanup jobs**: Regularly run cleanup to remove old deleted files
-4. **Validate on frontend too**: Don't just rely on backend validation
-5. **Use batch upload for multiple files**: More efficient than individual uploads
-6. **Soft delete first**: Use soft delete before hard delete for data recovery
-7. **Monitor storage**: Regularly check storage statistics
+1. **Use Resource ACLs Sparingly** - Reserve for exceptional cases
+2. **Prefer Role Permissions** - Use roles for common access patterns
+3. **Document Custom Roles** - When creating custom roles, document their purpose
+4. **Regular Audits** - Review permissions and ACLs periodically
+5. **Least Privilege** - Grant minimum necessary permissions
+6. **Test Authorization** - Verify permissions in integration tests
 
-## Testing
+## Common Scenarios
 
-### Using cURL
+### Scenario 1: Sales Person Access
+- Role: SALES
+- Permissions: inquiries:*, reservations:*, sales:*, clients:read
+- Data Scope: Only assigned inquiries
 
-```bash
-# Upload a file
-curl -X POST http://localhost:8080/api/v1/files/upload \
-  -F "file=@/path/to/image.jpg" \
-  -F "uploadSource=car_images" \
-  -F "uploadedBy=test_user"
+### Scenario 2: Store Manager
+- Role: STORE_MANAGER
+- Permissions: cars:*, inspections:*, movements:*
+- Data Scope: Location-based (their store only)
 
-# Download a file
-curl -X GET http://localhost:8080/api/v1/files/{fileId}?download=true \
-  -o downloaded-file.jpg
+### Scenario 3: Finance Officer
+- Role: FINANCE
+- Permissions: transactions:*, sales:read, reports:*
+- Data Scope: Department-based (finance department)
 
-# Get statistics
-curl -X GET http://localhost:8080/api/v1/files/statistics
-```
+### Scenario 4: Special Access
+- Employee needs temporary access to a specific car
+- Solution: Create Resource ACL granting WRITE access for duration
 
-### Using Postman
+## Implementation Files
 
-1. Import the Swagger documentation from `/swagger-ui.html`
-2. Test all endpoints with sample files
-3. Verify file segregation by type
+### Enums (6)
+- `RoleType`, `ScopeType`, `ScopeEffect`, `ResourceType`, `SubjectType`, `AccessLevel`
 
-## Security Considerations
+### Entities (4)
+- `Role`, `Permission`, `EmployeeDataScope`, `ResourceACL`
 
-1. **Add authentication**: Protect upload endpoints with Spring Security
-2. **File scanning**: Consider adding antivirus scanning for uploads
-3. **Rate limiting**: Implement rate limiting for upload endpoints
-4. **CORS configuration**: Configure CORS for frontend access
-5. **Access control**: Implement user-based file access control
+### Services (6)
+- `RoleService`, `PermissionService`, `DataScopeService`, `ResourceACLService`, `AuthorizationService`, `AuthorizationHelperService`
 
-## Future Enhancements
+### Controllers (6)
+- `AuthController`, `RoleController`, `PermissionController`, `EmployeeRoleController`, `DataScopeController`, `ResourceACLController`
 
-- [ ] Image resizing and thumbnail generation
-- [ ] File compression
-- [ ] CDN integration
-- [ ] S3 or cloud storage integration
-- [ ] File versioning
-- [ ] Advanced search and filtering
-- [ ] Bulk operations API
-- [ ] File sharing with expiration
-- [ ] Analytics and access logs
-
-## Troubleshooting
-
-### Issue: Files not uploading
-- Check `spring.servlet.multipart.max-file-size` setting
-- Verify uploads directory has write permissions
-- Check file type is allowed in `FileType` enum
-
-### Issue: Files not accessible
-- Verify file exists in storage path
-- Check file status is ACTIVE
-- Ensure file ID is correct
-
-### Issue: OutOfMemory errors
-- Reduce `max-file-size` and `max-request-size`
-- Implement streaming for large files
-- Increase JVM heap size
-
-## Support
-
-For issues and questions:
-1. Check the WheelShift Pro development guide
-2. Review the API documentation at `/swagger-ui.html`
-3. Contact the development team
+### Security (2)
+- `EmployeeUserDetails`, `EmployeeUserDetailsService`
 
 ---
 
-**Version**: 1.0
-**Last Updated**: January 31, 2026
-**Author**: WheelShift Pro Development Team
+## 📚 Documentation
+
+### Complete Guides
+- **[RBAC Complete Beginner's Guide](./RBAC_COMPLETE_GUIDE.md)** - Comprehensive guide with ASCII diagrams
+- **[API Endpoints Reference](./RBAC_ENDPOINTS.md)** - Complete list of all RBAC endpoints
+- **[Helper Methods Guide](./RBAC_HELPER_METHODS.md)** - Authorization helper methods documentation
+- **⭐ [Custom Employee Permissions Guide](./CUSTOM_PERMISSIONS_GUIDE.md)** - Direct permission assignment to employees (NEW!)
+
+### Technical Documentation
+- **[Implementation Summary](../../rbac/RBAC_IMPLEMENTATION_SUMMARY.md)** - Detailed implementation overview
+- **[Usage Guide](../../rbac/RBAC_USAGE_GUIDE.md)** - How to use the RBAC system
+
+---
+
+## Troubleshooting
+
+### Access Denied (403)
+
+1. Check employee has required role
+2. Verify role has required permission
+```sql
+-- Roles
+CREATE TABLE roles (
+    id BIGINT PRIMARY KEY,
+    name VARCHAR(50) UNIQUE NOT NULL,
+    description VARCHAR(255),
+    role_type VARCHAR(20),
+    is_system_role BOOLEAN DEFAULT FALSE
+);
+
+-- Permissions
+CREATE TABLE permissions (
+    id BIGINT PRIMARY KEY,
+    name VARCHAR(100) UNIQUE NOT NULL,
+    resource VARCHAR(50) NOT NULL,
+    action VARCHAR(50) NOT NULL
+);
+
+-- Role-Permission Mapping
+CREATE TABLE role_permissions (
+    role_id BIGINT,
+    permission_id BIGINT,
+    PRIMARY KEY (role_id, permission_id)
+);
+
+-- Employee-Role Assignment only
+2. **Prefer Role Permissions** - Use roles for common access patterns
+3. **Least Privilege Principle** - Grant minimum necessary permissions
+4. **Document Custom Roles** - Clearly document purpose and permissions
+5. **Regular Audits** - Review permissions and ACLs periodically
+6. **Test Authorization** - Verify permissions in integration tests
+7. **Data Scope Hierarchy** - Most specific scope takes precedence
+8. **Avoid Permission Conflicts** - Don't mix INCLUDE/EXCLUDE for same resource
+
+-- Data Scopes
+CREATE TABLE employee_data_scopes (
+    iales Person with Assignment Scope
+```
+Role: SALES
+Permissions: inquiries:*, reservations:*, sales:*, clients:read
+Data Scope: ASSIGNMENT (only assigned inquiries)
+Result: Can manage own inquiries and reservations
+```
+
+### Store Manager with Location Scope
+```
+Role: STORE_MANAGER  
+Permissions: cars:*, inspections:*, movements:*
+Data Scope: LOCATION (LOC-001)
+Result: Full car management for their store only
+```
+
+### Finance Officer with Department Scope
+```
+Role: FINANCE
+Permissions: transactions:*, sales:read, reports:*
+Data Scope: DEPARTMENT (Finance)
+Result: All financial operations, read-only sales
+```
+
+### Temporary Special Access
+```
+Scenario: Employee needs temporary access to specific car
+Solution: Create Resource ACL
+Resource: CAR-123
+Subject: EMPLOYEE-5
+Access Level: WRITE
+Duration: Set expiry in application logic
+``
+5. Apply data scope filters to query results
+```
+
+## Implementation Classes
+1. Check employee has required role: `GET /api/v1/employee-roles/employee/{id}`
+2. Verify role has permission: `GET /api/v1/roles/{roleId}`
+3. Check data scopes: `GET /api/v1/data-scopes/employee/{id}`
+4. Review resource ACLs: `GET /api/v1/resource-acl/resource/{type}/{id}`
+5. Verify JWT token is valid and not expired
+
+### Permission Not Working
+1. Confirm permission exists: `GET /api/v1/permissions`
+2. Check role-permission mapping in database
+3. Ensure employee-role assignment is active
+4. Clear security context and re-authenticate
+5. Check `@PreAuthorize` annotation syntax
+
+### Data Scope Issues
+1. Verify scope type and value are correct
+2. Check effect (INCLUDE vs EXCLUDE)
+3. Ensure resource entity has the scope field (location, department)
+4. Multiple scopes: most specific takes precedence
+5. Review query specification logic in `AuthorizationService.applyDataScopes()`
+
+## API Documentation
+
+Swagger UI: `http://localhost:8080/api/v1/swagger-ui.html`
+- `RoleType`: `SYSTEM`, `CUSTOM`
+- `ScopeType`: `LOCATION`, `DEPARTMENT`, `ASSIGNMENT`, `ALL`
+- `ScopeEffect`: `INCLUDE`, `EXCLUDE`
+- `ResourceType`: `CAR`, `CLIENT`, `INQUIRY`, `RESERVATION`, `SALE`, etc.
+- `SubjectType`: `ROLE`, `EMPLOYEE`
+- `AccessLevel`: `READ`, `WRITE`, `ADMIN`
+
+## Security Configuration
+
+```java
+@EnableWebSecurity
+@EnableMethodSecurity
+public class SecurityConfig {
+    
+    @Bean
+    public SecurityFilterChain filterChain(HttpSecurity http) {
+        return http
+            .csrf(csrf -> csrf.disable())
+            .authorizeHttpRequests(auth -> auth
+                .requestMatchers("/api/v1/auth/**").permitAll()
+                .anyRequest().authenticated()
+            )
+            .sessionManagement(session -> 
+                session.sessionCreationPolicy(STATELESS))
+            .addFilterBefore(jwtAuthFilter, 
+                UsernamePasswordAuthenticationFilter.class)
+            .build();
+    }
+}
+```
+
+**Features:**
+- JWT token authentication
+- Token expiration: 24 hours (configurable)
+- BCrypt password encoding
+- Stateless session management
+- Method-level security with `@PreAuthorize`
+
+## Testing Examples
+
+```java
+@Test
+public void testRolePermission() {
+    // Create employee with SALES role
+    Employee employee = createEmployee();
+    Role salesRole = roleRepository.findByName("SALES");
+    employee.setRoles(Set.of(salesRole));
+    
+    // Check permission
+    boolean hasAccess = authService.hasPermission(
+        employee.getId(), "inquiries:write"
+    );
+    
+    assertTrue(hasAccess);
+}
+
+@Test
+public void testDataScope() {
+    // Create employee with location scope
+    EmployeeDataScope scope = new EmployeeDataScope();
+    scope.setEmployeeId(employeeId);
+    scope.setScopeType(ScopeType.LOCATION);
+    scope.setScopeValue("LOC-001");
+    scope.setEffect(ScopeEffect.INCLUDE);
+    dataScopeRepository.save(scope);
+    
+    // Apply scopes to query
+    Specification<Car> spec = authService.applyDataScopes(
+        employeeId, ResourceType.CAR
+    );
+    List<Car> cars = carRepository.findAll(spec);
+    
+    // Verify only LOC-001 cars returned
+    assertTrue(cars.stream()
+        .allMatch(car -> "LOC-001".equals(car.getLocation().getCode())));
+}
+
+@Test
+public void testResourceACL() {
+    // Grant employee access to specific car
+    ResourceACL acl = new ResourceACL();
+    acl.setResourceType(ResourceType.CAR);
+    acl.setResourceId("CAR-123");
+    acl.setSubjectType(SubjectType.EMPLOYEE);
+    acl.setSubjectId(employeeId);
+    acl.setAccessLevel(AccessLevel.WRITE);
+    aclRepository.save(acl);
+    
+    // Check access
+    boolean canEdit = authService.canAccessResource(
+        employeeId, ResourceType.CAR, "CAR-123", AccessLevel.WRITE
+    );
+    
+    assertTrue(canEdit);
+}
+```
+2. Check effect (INCLUDE vs EXCLUDE)
+3. Ensure resource has the scope field
+4. Review scope precedence (most specific wins)
+
+## Additional Resources
+- API Documentation: http://localhost:8080/api/v1/swagger-ui.html
