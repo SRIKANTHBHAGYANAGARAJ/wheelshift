@@ -1,0 +1,216 @@
+services:
+  # MySQL Database
+  mysql:
+    image: mysql:8.0
+    container_name: wheelshift-mysql
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: wheelshift_db
+      MYSQL_USER: wheelshift_user
+      MYSQL_PASSWORD: wheelshift_pass_2025
+    ports:
+      - "3307:3306"  # Host:Container - Use 3307 to avoid conflicts with local MySQL
+    command: --log_bin_trust_function_creators=1
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./docker-init:/docker-entrypoint-initdb.d
+    networks:
+      - wheelshift-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      timeout: 20s
+      retries: 10
+
+  # phpMyAdmin - Web-based MySQL administration tool
+  phpmyadmin:
+    image: phpmyadmin/phpmyadmin:latest
+    container_name: wheelshift-phpmyadmin
+    restart: always
+    environment:
+      PMA_HOST: mysql
+      PMA_PORT: 3306
+      PMA_ARBITRARY: 1
+      UPLOAD_LIMIT: 100M
+    ports:
+      - "8081:80"
+    depends_on:
+      - mysql
+    networks:
+      - wheelshift-network
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: wheelshift-redis
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - wheelshift-network
+    command: redis-server --appendonly yes
+
+  # Redis Commander - Redis GUI
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: wheelshift-redis-commander
+    restart: always
+    environment:
+      - REDIS_HOSTS=local:redis:6379
+    ports:
+      - "8082:8081"
+    depends_on:
+      - redis
+    networks:
+      - wheelshift-network
+
+  # Redis Insights - Advanced Redis GUI
+  redis-insights:
+    image: redis/redisinsight:latest
+    container_name: wheelshift-redis-insights
+    restart: always
+    ports:
+      - "5540:5540"
+    volumes:
+      - redis_insights_data:/data
+    depends_on:
+      - redis
+    networks:
+      - wheelshift-network
+
+  # ── Apache Kafka (KRaft mode — no Zookeeper) ────────────────────────────
+  kafka:
+    image: apache/kafka:latest
+    container_name: wheelshift-kafka
+    restart: always
+    ports:
+      - "9092:9095"   # host port 9092 → container EXTERNAL listener (9095)
+    environment:
+      # KRaft — node identity
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      # Listeners
+      #   PLAINTEXT  :9092 — Docker-internal, advertised as kafka:9092
+      #   EXTERNAL   :9095 — host-accessible via host port 9092, advertised as localhost:9092
+      #   CONTROLLER :9093 — KRaft controller, internal only
+      KAFKA_LISTENERS: PLAINTEXT://:9092,EXTERNAL://:9095,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      # Topic defaults
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_NUM_PARTITIONS: 3
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 1
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      # Stable cluster ID for KRaft (base64-encoded 16-byte UUID)
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    networks:
+      - wheelshift-network
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list"]
+      interval: 15s
+      timeout: 10s
+      retries: 6
+      start_period: 30s
+
+  # Kafka UI — browser-based Kafka management
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: wheelshift-kafka-ui
+    restart: always
+    ports:
+      - "8083:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: wheelshift-local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks:
+      - wheelshift-network
+
+  # WheelShiftPro Spring Boot Application
+  ws-pro:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: development
+    container_name: ws-pro-dev
+    restart: always
+    ports:
+      - "8080:8080"  # Application port
+    environment:
+      # Database Configuration
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/wheelshift_db?createDatabaseIfNotExist=true&useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true
+      SPRING_DATASOURCE_USERNAME: wheelshift_user
+      SPRING_DATASOURCE_PASSWORD: wheelshift_pass_2025
+      
+      # Redis Configuration
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: 6379
+
+      # Kafka Configuration
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      
+      # Application Configuration
+      SPRING_PROFILES_ACTIVE: dev
+      SERVER_PORT: 8080
+      
+      # File Storage Configuration
+      FILE_STORAGE_BASE_PATH: /app/uploads
+      FILE_STORAGE_TYPE: local
+    volumes:
+      # Source code - for hot reload
+      - ./src:/app/src:rw
+      - ./pom.xml:/app/pom.xml:ro
+      
+      # Maven repository cache (to avoid re-downloading dependencies)
+      - maven_repo:/root/.m2
+      
+      # Target directory - for compiled classes
+      - ./target:/app/target:rw
+      
+      # Uploads directory - persistent file storage
+      - ./uploads:/app/uploads:rw
+      
+      # Logs directory
+      - ./logs:/app/logs:rw
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      kafka:
+        condition: service_healthy
+    networks:
+      - wheelshift-network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+
+volumes:
+  mysql_data:
+    driver: local
+  redis_data:
+    driver: local
+  redis_insights_data:
+    driver: local
+  kafka_data:
+    driver: local
+  maven_repo:
+    driver: local
+
+networks:
+  wheelshift-network:
+    driver: bridge
