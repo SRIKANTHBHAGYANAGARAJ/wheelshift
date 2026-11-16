@@ -1,348 +1,492 @@
-# WheelShift Pro — Backend
+# Authentication System Documentation
 
-> Production-ready Spring Boot backend for a used-vehicle trading enterprise.
-> Covers the full lifecycle of a sale: inventory, inspections, reservations, clients,
-> employees, financials, tasks, events, and a multi-channel notification system —
-> all secured by a fine-grained RBAC layer.
+## Overview
 
----
+WheelShiftPro uses a JWT (JSON Web Token) based authentication system with Spring Security, implementing Role-Based Access Control (RBAC) for authorization. This system provides secure user authentication, stateless token management, and granular permission control.
 
-## Quick Start
+## System Architecture
 
-### Option 1 — Full Docker (Recommended)
+### Authentication Flow
 
-```bash
-git clone <repository-url>
-cd wheelshift-backend
-
-# Start MySQL, Redis, Kafka, Kafka UI, phpMyAdmin, Redis Commander
-docker-compose -f docker-compose-dev.yml up -d
-
-# Follow application logs
-docker-compose -f docker-compose-dev.yml logs -f ws-pro
-
-# Tear down (keeps data)
-docker-compose -f docker-compose-dev.yml down
-
-# Tear down + wipe all data
-docker-compose -f docker-compose-dev.yml down -v
+```mermaid
+sequenceDiagram
+    participant Client
+    participant AuthController
+    participant SecurityConfig
+    participant JwtTokenProvider
+    participant EmployeeRepository
+    
+    Client->>AuthController: POST /api/v1/auth/login
+    AuthController->>EmployeeRepository: findByEmail(email)
+    EmployeeRepository-->>AuthController: Employee details
+    AuthController->>SecurityConfig: authenticate(credentials)
+    SecurityConfig-->>AuthController: Authentication result
+    AuthController->>JwtTokenProvider: generateToken(authentication)
+    JwtTokenProvider-->>AuthController: JWT Token
+    AuthController-->>Client: AuthResponse + JWT Token
+    
+    Client->>AuthController: Request with Authorization header
+    AuthController->>JwtTokenProvider: validateToken(token)
+    JwtTokenProvider-->>AuthController: Token valid
+    AuthController-->>Client: Protected resource
 ```
 
-**Dev services:**
+### Key Components
 
-| Service | URL |
-|---------|-----|
-| API | http://localhost:8080 |
-| Swagger UI | http://localhost:8080/swagger-ui.html |
-| Actuator / Health | http://localhost:8080/actuator/health |
-| phpMyAdmin | http://localhost:8081 |
-| Redis Commander | http://localhost:8082 |
-| Kafka UI | http://localhost:8083 |
-| Redis Insights | http://localhost:5540 |
+1. **AuthController** - Handles authentication endpoints
+2. **SecurityConfig** - Spring Security configuration with JWT
+3. **JwtTokenProvider** - JWT token generation and validation
+4. **JwtAuthenticationFilter** - Request interceptor for JWT validation
+5. **EmployeeUserDetailsService** - User data access
+6. **RBAC System** - Role and permission management
 
----
+## Authentication Endpoints
 
-### Option 2 — Local (IDE / Terminal)
+### Login
+- **URL**: `POST /api/v1/auth/login`
+- **Body**: 
+  ```json
+  {
+    "email": "user@example.com",
+    "password": "password"
+  }
+  ```
+- **Success Response**:
+  ```json
+  {
+    "employeeId": 1,
+    "email": "user@example.com",
+    "name": "John Doe",
+    "roles": ["ADMIN"],
+    "permissions": ["READ_USERS", "WRITE_USERS"],
+    "accessToken": "eyJhbGciOiJIUzUxMiJ9...",
+    "message": "Login successful",
+    "tokenType": "Bearer"
+  }
+  ```
+- **Error Responses**:
+  - `404` - User not found
+  - `401` - Invalid password
 
-**Prerequisites:** Java 17, Maven 3.9+, Docker
+### Get Current User
+- **URL**: `GET /api/v1/auth/me`
+- **Headers**: 
+  ```
+  Authorization: Bearer <jwt_token>
+  ```
+- **Success Response**:
+  ```json
+  {
+    "employeeId": 1,
+    "email": "user@example.com",
+    "name": "John Doe",
+    "roles": ["ADMIN"],
+    "permissions": ["READ_USERS", "WRITE_USERS"]
+  }
+  ```
+
+### Token Validation
+- **URL**: `GET /api/v1/auth/validate-session`
+- **Headers**: 
+  ```
+  Authorization: Bearer <jwt_token>
+  ```
+- **Success Response**:
+  ```json
+  {
+    "valid": true,
+    "expired": false,
+    "message": "Token is valid",
+    "employeeId": 1,
+    "email": "user@example.com"
+  }
+  ```
+- **Expired Token Response**:
+  ```json
+  {
+    "valid": false,
+    "expired": true,
+    "message": "Token expired or invalid",
+    "errorCode": "TOKEN_EXPIRED"
+  }
+  ```
+
+### Logout
+- **URL**: `POST /api/v1/auth/logout`
+- **Headers**: 
+  ```
+  Authorization: Bearer <jwt_token>
+  ```
+- **Success Response**:
+  ```json
+  {
+    "message": "Logout successful. Please discard the JWT token on client side."
+  }
+  ```
+
+## Token Management
+
+### JWT Configuration
+
+The system uses JWT tokens with the following configuration:
+
+- **Token Expiration**: 24 hours (86400000 ms) - configurable
+- **Algorithm**: HS256 (HMAC with SHA-256)
+- **Token Format**: Bearer token in Authorization header
+- **Claims**:
+  - `sub`: Employee ID
+  - `email`: Employee email address
+  - `iat`: Issued at timestamp
+  - `exp`: Expiration timestamp
+
+### Token Lifecycle
+
+1. **Generation**: Token created upon successful login
+2. **Validation**: Automatic validation on each protected request via `JwtAuthenticationFilter`
+3. **Usage**: Include in Authorization header: `Bearer <token>`
+4. **Expiration**: Token expires after 24 hours (configurable)
+5. **Renewal**: Client must re-authenticate after expiration
+6. **Logout**: Client discards token (no server-side invalidation needed)
+
+## Error Handling
+
+The system provides distinct error responses for different scenarios:
+
+### Token Expired (401 Unauthorized)
+```json
+{
+  "type": "about:blank",
+  "title": "Token Expired",
+  "status": 401,
+  "detail": "Your authentication token has expired. Please login again.",
+  "instance": "/api/v1/rbac/permissions",
+  "code": "TOKEN_EXPIRED",
+  "timestamp": "2026-01-26T10:30:00"
+}
+```
+
+### Invalid Token (401 Unauthorized)
+```json
+{
+  "type": "about:blank",
+  "title": "Unauthorized",
+  "status": 401,
+  "detail": "Invalid or malformed authentication token.",
+  "instance": "/api/v1/rbac/permissions",
+  "code": "INVALID_TOKEN",
+  "timestamp": "2026-01-26T10:30:00"
+}
+```
+
+### Insufficient Permissions (403 Forbidden)
+```json
+{
+  "type": "about:blank",
+  "title": "Insufficient Permissions",
+  "status": 403,
+  "detail": "You do not have sufficient permissions to access this resource.",
+  "instance": "/api/v1/rbac/permissions",
+  "code": "INSUFFICIENT_PERMISSIONS",
+  "timestamp": "2026-01-26T10:30:00"
+}
+```
+
+### Access Denied (403 Forbidden)
+```json
+{
+  "type": "about:blank",
+  "title": "Access Denied",
+  "status": 403,
+  "detail": "You do not have permission to access this resource.",
+  "instance": "/api/v1/rbac/permissions",
+  "code": "ACCESS_DENIED",
+  "timestamp": "2026-01-26T10:30:00"
+}
+```
+
+## Error Code Reference
+
+| Error Code | HTTP Status | Description | Action Required |
+|------------|-------------|-------------|-----------------|
+| `TOKEN_EXPIRED` | 401 | JWT token has expired | Re-authenticate |
+| `INVALID_TOKEN` | 401 | Malformed or invalid JWT token | Re-authenticate |
+| `INSUFFICIENT_PERMISSIONS` | 403 | User lacks required permissions | Contact admin for role assignment |
+| `ACCESS_DENIED` | 403 | Generic access denied | Check permissions or re-authenticate |
+| `AUTHENTICATION_FAILED` | 401 | Login credentials invalid | Verify credentials |
+| `AUTHORIZATION_FAILED` | 401 | General authorization failure | Re-authenticate |
+
+## Frontend Integration
+
+### Handling Authentication Errors
+
+```javascript
+// Example axios interceptor for handling auth errors
+axios.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response?.status === 401) {
+      const errorCode = error.response?.data?.code;
+      
+      if (errorCode === 'TOKEN_EXPIRED' || errorCode === 'INVALID_TOKEN') {
+        // Token expired or invalid - redirect to login
+        localStorage.removeItem('jwt_token');
+        window.location.href = '/login';
+      } else {
+        // Other auth errors - show error message
+        showError('Authentication failed');
+      }
+    } else if (error.response?.status === 403) {
+      const errorCode = error.response?.data?.code;
+      
+      if (errorCode === 'INSUFFICIENT_PERMISSIONS') {
+        showError('You do not have permission to perform this action');
+      } else {
+        showError('Access denied');
+      }
+    }
+    
+    return Promise.reject(error);
+  }
+);
+
+// Add token to all requests
+axios.interceptors.request.use(
+  (config) => {
+    const token = localStorage.getItem('jwt_token');
+    if (token) {
+      config.headers.Authorization = `Bearer ${token}`;
+    }
+    return config;
+  },
+  (error) => Promise.reject(error)
+);
+```
+
+### Token Storage and Management
+
+```javascript
+// Store token after login
+const login = async (email, password) => {
+  try {
+    const response = await axios.post('/api/v1/auth/login', { email, password });
+    const { accessToken, employeeId, roles, permissions } = response.data;
+    
+    // Store token in localStorage
+    localStorage.setItem('jwt_token', accessToken);
+    localStorage.setItem('user', JSON.stringify({ employeeId, roles, permissions }));
+    
+    return response.data;
+  } catch (error) {
+    console.error('Login failed:', error);
+    throw error;
+  }
+};
+
+// Logout - remove token
+const logout = async () => {
+  try {
+    await axios.post('/api/v1/auth/logout');
+  } finally {
+    // Always remove token from storage
+    localStorage.removeItem('jwt_token');
+    localStorage.removeItem('user');
+    window.location.href = '/login';
+  }
+};
+
+// Check if user is authenticated
+const isAuthenticated = () => {
+  return !!localStorage.getItem('jwt_token');
+};
+```
+
+### Token Validation
+
+```javascript
+// Validate token before making sensitive requests
+const validateToken = async () => {
+  try {
+    const response = await axios.get('/api/v1/auth/validate-session');
+    return response.data.valid;
+  } catch (error) {
+    return false;
+  }
+};
+
+// Use before critical operations
+const performCriticalOperation = async () => {
+  const isTokenValid = await validateToken();
+  if (!isTokenValid) {
+    localStorage.removeItem('jwt_token');
+    window.location.href = '/login';
+    return;
+  }
+  
+  // Proceed with operation
+  await axios.get('/api/v1/rbac/permissions');
+};
+```
+
+## Security Considerations
+
+### JWT Security
+
+1. **Token Storage**: Store tokens in localStorage or sessionStorage (not in cookies for JWT)
+2. **HTTPS Only**: Always use HTTPS in production to prevent token interception
+3. **Token Expiration**: Tokens expire after 24 hours by default
+4. **Secret Key**: Use a strong secret key (minimum 256 bits) in production
+5. **Stateless Authentication**: No server-side session storage required
+
+### Best Practices
+
+1. **Always validate tokens** before performing sensitive operations
+2. **Handle token expiry gracefully** in the frontend
+3. **Use HTTPS in production** to protect tokens in transit
+4. **Implement proper logout** by removing tokens from client storage
+5. **Monitor token activity** for security auditing
+6. **Rotate JWT secret** periodically in production
+7. **Use short expiration times** for sensitive operations
+
+## Testing Authentication
+
+### Manual Testing
 
 ```bash
-# 1. Start infrastructure only
-docker-compose -f docker-compose-dev.yml up -d mysql redis kafka
+# Login and save token
+curl -X POST http://localhost:8080/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email": "admin@wheelshiftpro.com", "password": "admin123"}' \
+  | jq -r '.accessToken' > token.txt
 
-# 2. Set environment variables
-#    IntelliJ: EnvFile plugin → add .env to Run Configuration
-#    Terminal:
-export $(cat .env | grep -v '^#' | xargs)
+# Use token for protected endpoint
+curl -X GET http://localhost:8080/api/v1/auth/me \
+  -H "Authorization: Bearer $(cat token.txt)"
 
-# 3. Run with dev profile
-mvn spring-boot:run -Dspring-boot.run.profiles=dev
+# Validate token
+curl -X GET http://localhost:8080/api/v1/auth/validate-session \
+  -H "Authorization: Bearer $(cat token.txt)"
+
+# Logout
+curl -X POST http://localhost:8080/api/v1/auth/logout \
+  -H "Authorization: Bearer $(cat token.txt)"
+```
+
+### Unit Test Examples
+
+```java
+@Test
+public void testTokenExpiry() {
+    // Mock expired token
+    when(jwtTokenProvider.validateToken(anyString())).thenReturn(false);
+    
+    ResponseEntity<SessionValidationResponse> response = 
+        authController.validateSession(null);
+    
+    assertThat(response.getBody().isExpired()).isTrue();
+    assertThat(response.getBody().getErrorCode()).isEqualTo("TOKEN_EXPIRED");
+}
+
+@Test
+public void testSuccessfulLogin() {
+    LoginRequest request = new LoginRequest("admin@wheelshiftpro.com", "admin123");
+    
+    ResponseEntity<AuthResponse> response = authController.login(request);
+    
+    assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+    assertThat(response.getBody().getAccessToken()).isNotNull();
+    assertThat(response.getBody().getTokenType()).isEqualTo("Bearer");
+}
+```
+
+## Configuration Reference
+
+### application.properties
+
+```properties
+# JWT Configuration
+jwt.secret=your-secret-key-here-minimum-256-bits
+jwt.expiration=86400000
+
+# CORS Configuration (if needed)
+# Allow credentials for JWT in Authorization header
+```
+
+### SecurityConfig.java
+
+```java
+.sessionManagement(session -> session
+    .sessionCreationPolicy(SessionCreationPolicy.STATELESS)
+)
+.addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)
+```
+
+### JWT Token Structure
+
+```json
+{
+  "sub": "1",
+  "email": "admin@wheelshiftpro.com",
+  "iat": 1737878400,
+  "exp": 1737964800
+}
+```
+
+## Troubleshooting
+
+### Common Issues
+
+1. **"Token Expired" on every request**
+   - Check token expiration configuration
+   - Verify system clock synchronization
+   - Ensure token is being stored and sent correctly
+
+2. **403 Forbidden for admin user**
+   - Verify user has correct roles assigned
+   - Check RBAC configuration
+   - Validate endpoint security rules
+   - Ensure token contains correct claims
+
+3. **Token not being accepted**
+   - Check Authorization header format: `Bearer <token>`
+   - Verify JWT secret matches between environments
+   - Ensure token hasn't expired
+   - Check for whitespace in token string
+
+4. **CORS issues with Authorization header**
+   - Configure CORS to allow Authorization header
+   - Ensure `Access-Control-Allow-Headers` includes `Authorization`
+
+### Debug Logging
+
+Enable debug logging to troubleshoot authentication issues:
+
+```properties
+logging.level.com.wheelshiftpro=DEBUG
+logging.level.org.springframework.security=DEBUG
+logging.level.com.wheelshiftpro.security.JwtAuthenticationFilter=DEBUG
+```
+
+## Migration Notes
+
+When upgrading or modifying the authentication system:
+
+1. **Generate strong JWT secret** using secure random generator
+2. **Update frontend** to use Authorization header instead of cookies
+3. **Test token expiration** behavior thoroughly
+4. **Verify RBAC compatibility** with existing roles/permissions
+5. **Update API documentation** with new authentication flow
+6. **Remove session-related code** and dependencies
+7. **Update CORS configuration** to allow Authorization header
+
+### Generating JWT Secret
+
+```bash
+# Generate a secure random secret (256 bits)
+openssl rand -base64 32
+
+# Or use online tools like: https://www.grc.com/passwords.htm
 ```
 
 ---
 
-## Environment Variables
-
-All secrets are injected via environment variables. The `.env` file at the project root
-(gitignored — never committed) holds local dev values:
-
-```bash
-# Database
-DB_URL=jdbc:mysql://localhost:3307/wheelshift_db?...
-DB_USERNAME=wheelshift_user
-DB_PASSWORD=your_password
-
-# Redis
-REDIS_HOST=localhost
-REDIS_PORT=6379
-REDIS_PASSWORD=
-
-# Kafka
-# localhost:9092 maps to the broker's EXTERNAL listener when running outside Docker
-KAFKA_BOOTSTRAP_SERVERS=localhost:9092
-
-# JWT  (generate with: openssl rand -hex 32)
-JWT_SECRET=change_this_in_production
-JWT_EXPIRATION_MS=86400000
-
-# AWS S3 (leave blank to use local file storage)
-AWS_ACCESS_KEY=
-AWS_SECRET_KEY=
-
-# AI Service (WheelShift AI — generates vehicle similarity recommendations)
-# Generate key with: python -c "import secrets; print(secrets.token_hex(32))"
-AI_SERVICE_BASE_URL=http://localhost:8000
-AI_SERVICE_API_KEY=change_this_in_production
-AI_SERVICE_ENABLED=true
-```
-
-Never hardcode secrets in `application.properties` or any committed file.
-
----
-
-## Technology Stack
-
-| Category | Technology |
-|----------|------------|
-| Framework | Spring Boot 4.x |
-| Language | Java 17 |
-| Build | Maven 3.9+, JaCoCo, OWASP dependency-check |
-| Database | MySQL 8.0 |
-| ORM / Schema | Spring Data JPA (Hibernate) + Flyway |
-| Mapping | MapStruct 1.5.5 + Lombok |
-| Security | Spring Security 6, JWT (JJWT 0.12) |
-| Caching | Redis 7 (Spring Cache) |
-| Async Messaging | Apache Kafka 4.x, KRaft mode (spring-kafka) |
-| AI Integration | WheelShift AI Service (HTTP/WebClient, similarity recommendations + lead scoring) |
-| Real-time Push | Server-Sent Events (SSE) || Scheduling | `@Scheduled` + ShedLock (Redis distributed lock) |
-| Observability | Spring Actuator, Micrometer / Prometheus |
-| API Docs | SpringDoc OpenAPI 3 / Swagger UI |
-| Resilience | Resilience4j |
-| Testing | JUnit 5, Testcontainers, ArchUnit, REST Assured |
-| Logging | Logback (console + file; JSON via Logstash encoder in prod) |
-| Containers | Docker, Docker Compose |
-
----
-
-## Features
-
-### Core Business
-- **Vehicle Inventory** — full car & motorcycle lifecycle (available → reserved → sold)
-- **Client Management** — profiles, purchase history, status tracking
-- **Employee Management** — staff profiles, roles, performance metrics
-- **Lead Management** — inquiry tracking and conversion pipeline
-- **Reservation System** — vehicle holds with deposit management; auto-expiry via scheduler
-- **Sales Processing** — transaction recording, commission tracking
-- **Financial Management** — transaction ledger and reporting
-- **Storage Locations** — multi-facility management with capacity tracking
-- **Inspections** — car and motorcycle inspection records
-- **Task Management** — task assignment, priorities, Kanban-style workflow
-- **Event Calendar** — appointments and event scheduling
-- **AI Recommendations** — similar vehicle suggestions powered by the WheelShift AI service (hybrid collaborative + content-based filtering); degrades gracefully when the AI service is unavailable
-- **AI Lead Scoring** — score inquiries by conversion likelihood (0–100) with Hot/Warm/Cold priority tiers and per-signal breakdowns; batch endpoint for dashboard enrichment (up to 50 inquiries per call); degrades gracefully when the AI service is unavailable
-
-### Role-Based Dashboards
-Five tailored dashboard views: Admin, Sales, Inspector, Finance, Store Manager.
-
-### Security & RBAC
-- 6 built-in roles: `SUPER_ADMIN`, `ADMIN`, `SALES`, `STORE_MANAGER`, `INSPECTOR`, `FINANCE`
-- 40+ fine-grained permissions in `resource:action` format
-- Data scoping (location / department-based filtering)
-- Resource-level ACLs for per-record access control
-- Stateless JWT authentication
-
-### Notifications
-- Multi-channel: In-App, Email, SMS, WhatsApp, Push, Webhook
-- Template engine with variable substitution
-- Per-employee channel preferences
-- **Delivery rules** — opt-out preferences, severity threshold filtering, quiet hours (auto-reschedule), digest batching (hourly scheduler)
-- **Async event-driven delivery via Apache Kafka** — producer publishes `NotificationJobMessage` to `notification.jobs.inapp` / `notification.jobs.email` topics; consumer processes with manual acknowledgement
-- **Real-time push via SSE** — consumers forward processed jobs to Redis Pub/Sub; a `MessageListener` picks them up and pushes to all active `SseEmitter` connections for the recipient
-- Stream endpoint: `GET /api/v1/notifications/stream/{recipientType}/{recipientId}` (`text/event-stream`)
-- Typed event catalogue via `NotificationEventType` enum (e.g. `INQUIRY_ASSIGNED`, `TASK_DUE`, `SALE_COMPLETED`)
-- Status tracking per delivery attempt
-
----
-
-## API Reference
-
-**Base URL:** `http://localhost:8080/api/v1`
-**Interactive docs:** http://localhost:8080/swagger-ui.html
-
-| Group | Base Path | Controller |
-|-------|-----------|------------|
-| Auth | `/auth` | `AuthController` |
-| Cars | `/cars` | `CarController` |
-| Car Models | `/car-models` | `CarModelController` |
-| Car Inspections | `/car-inspections` | `CarInspectionController` |
-| Motorcycles | `/motorcycles` | `MotorcycleController` |
-| Motorcycle Models | `/motorcycle-models` | `MotorcycleModelController` |
-| Motorcycle Inspections | `/motorcycle-inspections` | `MotorcycleInspectionController` |
-| Clients | `/clients` | `ClientController` |
-| Employees | `/employees` | `EmployeeController` |
-| Sales | `/sales` | `SaleController` |
-| Reservations | `/reservations` | `ReservationController` |
-| Financial Transactions | `/financial-transactions` | `FinancialTransactionController` |
-| Storage Locations | `/storage-locations` | `StorageLocationController` |
-| Tasks | `/tasks` | `TaskController` |
-| Events | `/events` | `EventController` |
-| Inquiries | `/inquiries` | `InquiryController` |
-| Audit Logs | `/audit-logs` | `AuditLogController` |
-| Files | `/files` | `FileStorageController` |
-| Dashboards | `/dashboard` | `DashboardController` |
-| Notifications | `/notifications` | `NotificationController` |
-| Notification Preferences | `/notifications/preferences` | `NotificationPreferenceController` |
-| Notification Templates | `/notifications/templates` | `NotificationTemplateController` |
-| Roles | `/rbac/roles` | `RoleController` |
-| Permissions | `/rbac/permissions` | `PermissionController` |
-| Employee Roles | `/rbac/employees/{id}/roles` | `EmployeeRoleController` |
-| Employee Permissions | `/rbac/employee-permissions` | `EmployeePermissionController` |
-| Resource ACLs | `/rbac/acl` | `ResourceACLController` |
-| Data Scopes | `/rbac/employees/{id}/scope` | `DataScopeController` |
-| AI Recommendations | `/recommendations` | `RecommendationController` |
-| Lead Scoring | `/lead-scoring` | `LeadScoringController` |
-
----
-
-## Database
-
-Schema is managed by **Flyway** — migrations run automatically on startup.
-
-| Version | Description |
-|---------|-------------|
-| V1 | Initial schema |
-| V2 | Seed data |
-| V3 | Column type fixes |
-| V4 | RBAC tables |
-| V5 | RBAC seed data |
-| V6 | Notifications tables |
-| V7 | Assign employee roles |
-| V8 | Fix roles + super admin |
-| V9 | Motorcycle tables |
-| V10 | Motorcycle movements |
-| V11 | Employee custom permissions |
-| V12 | File storage tables |
-| V13 | File storage columns |
-| V14 | Merge car-related tables |
-| V15 | Merge motorcycle-related tables |
-| V16 | Seed car models from dataset |
-| V17 | Seed motorcycle models from dataset |
-| V18 | Align notification event types to enum |
-| V19 | Storage location triggers |
-| V20 | Split vehicle count by type |
-| V21 | Add vehicle description |
-| V22 | Audit logs table |
-| V23 | Notification digest support (compound index) |
-
-Migration files: `src/main/resources/db/migration/`
-Rollback scripts (manual): `src/main/resources/db/rollbacks/`
-
-**Never modify a committed migration.** Create a new `V{n+1}__...sql` for any schema change.
-
-### Running Migrations Manually
-
-Migrations run automatically on every app startup. The Flyway Maven plugin is pre-configured in `pom.xml` and reads `DB_USERNAME` / `DB_PASSWORD` from your environment, so you can run any Flyway goal with a single command:
-
-```bash
-# Source your credentials first (once per shell session)
-export $(cat .env | grep -v '^#' | xargs)   # Linux/macOS
-# or load .env via your IDE's EnvFile plugin on Windows
-
-# Apply all pending migrations
-mvn flyway:migrate
-
-# Check current migration status
-mvn flyway:info
-
-# Validate applied migrations match the local scripts
-mvn flyway:validate
-
-# Repair the schema history table (use after fixing a failed migration)
-mvn flyway:repair
-```
-
-To target a different host or database, override only what you need:
-
-```bash
-mvn flyway:migrate -Dflyway.url=jdbc:mysql://other-host:3306/wheelshift_db
-```
-
-> Ensure the MySQL container is up (`docker-compose -f docker-compose-dev.yml up -d mysql`) before running any Flyway commands.
-
----
-
-## Testing
-
-```bash
-# Full build: compile → test → coverage check → architecture rules
-mvn clean install
-
-# Tests only
-mvn test
-
-# Skip tests for fast iteration
-mvn install -DskipTests
-
-# Architecture rules only
-mvn test -Dtest=ArchitectureRulesTest
-
-# Coverage report → open target/site/jacoco/index.html after running
-mvn test jacoco:report
-```
-
-`ArchitectureRulesTest` enforces layered architecture rules on every build via ArchUnit.
-A failing architecture test is a **build failure** — fix the architecture, never skip the test.
-
----
-
-## Development Status
-
-| Module | Status |
-|--------|--------|
-| Core Business APIs | ✅ Complete |
-| RBAC System | ✅ Complete |
-| Notification System | ✅ Complete |
-| Notification Delivery Rules | ✅ Complete |
-| Kafka Async Delivery | ✅ Complete |
-| SSE Real-time Push | ✅ Complete |
-| Dashboard System | ✅ Complete |
-| Redis Caching | ✅ Complete |
-| Task Management | ✅ Complete |
-| JWT Authentication | ✅ Complete |
-| Swagger / OpenAPI | ✅ Complete |
-| Error Handling | ✅ Complete |
-| Audit Logging | ✅ Complete |
-| File Storage (Local + S3) | ✅ Complete |
-| Database Migrations (V23) | ✅ Complete |
-| Docker Setup | ✅ Complete |
-| Observability (Actuator + Prometheus) | ✅ Complete |
-| Request Correlation (X-Request-Id) | ✅ Complete |
-| Distributed Scheduling (ShedLock) | ✅ Complete |
-| Architecture Tests (ArchUnit) | ✅ Complete |
-| AI Recommendations (Similarity API) | ✅ Complete |
-| AI Lead Scoring | ✅ Complete |
-| Unit Tests | 🔄 In Progress |
-| Integration Tests (Testcontainers) | 📋 Planned |
-| End-to-End Tests (REST Assured) | 📋 Planned |
-
----
-
-## Documentation
-
-| Doc | Description |
-|-----|-------------|
-| [CONTRIBUTING.md](CONTRIBUTING.md) | Architecture diagrams, folder conventions, how to add features and migrations |
-| [docs/BUSINESS_LOGIC.md](docs/BUSINESS_LOGIC.md) | Complete business logic specification for all operations |
-| [docs/IMPLEMENTATION_STATUS.md](docs/IMPLEMENTATION_STATUS.md) | Implementation and test coverage status tracker |
-| [docs/DATABASE_DESIGN.md](docs/DATABASE_DESIGN.md) | Entity-relationship diagrams and database schema |
-| [docs/AI_SERVICE_OVERVIEW.md](docs/AI_SERVICE_OVERVIEW.md) | AI service architecture and implementation plan |
-| [docs/ARCHITECTURE_REVIEW.md](docs/ARCHITECTURE_REVIEW.md) | Architecture review, design patterns, improvement roadmap |
-| [docs/PRODUCT_DOCUMENTATION.md](docs/PRODUCT_DOCUMENTATION.md) | Full system and product overview |
-| [docs/DEVELOPMENT_GUIDE.md](docs/DEVELOPMENT_GUIDE.md) | Detailed development workflow |
-| [docs/rbac/RBAC_COMPLETE_GUIDE.md](docs/rbac/RBAC_COMPLETE_GUIDE.md) | RBAC system deep dive |
-| [docs/caching/REDIS_CACHING_GUIDE.md](docs/caching/REDIS_CACHING_GUIDE.md) | Redis caching implementation |
-| [docs/file-handling/README.md](docs/file-handling/README.md) | File storage and S3 migration |
-| [docs/features/notifications/README.md](docs/features/notifications/README.md) | Notification system |
-| [docs/features/dashboard/README.md](docs/features/dashboard/README.md) | Dashboard system |
-| [docs/features/tasks/README.md](docs/features/tasks/README.md) | Task management |
-| Swagger UI | http://localhost:8080/swagger-ui.html *(requires app running)* |
+*Last updated: January 26, 2026*
